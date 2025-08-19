@@ -1,0 +1,218 @@
+# install and load package-------------------------------------------------------------------------
+load_my_packages <- function() {
+  # install
+  if (!require("pacman")) install.packages("pacman")
+  
+  # install and load
+  pacman::p_load(
+    tidyverse, lubridate, zoo, data.table,       
+    survival, survminer, ggsurvfit, tidycmprsk, cmprsk, rms, smoothHR, riskRegression, coxme, 
+    lmtest, epiR, interactionR, ipw, WeightIt, EValue, 
+    caret, xgboost,                            
+    ggsci, hrbrthemes, viridis, corrplot, patchwork,  
+    openxlsx, tableone, table1, forestplot, Cairo, showtext, 
+    boot, trend, fdrtool, qgcomp, missForest, AER, broom, wCorr, polycor 
+  )
+}
+
+load_my_packages()
+
+# read and combine data-------------------------------------------------------------------------
+Covariates <-readRDS("D:/xxx/Covariates.rds") 
+Exposure <-readRDS("D:/xxx/Exposure.rds") 
+Outcome <- readRDS("D:/xxx/TAAD_Outcomes.rds") 
+IPW_GPS <-readRDS("D:/xxx/IPW_GPS.rds") 
+
+data_list <- list(Covariates, Exposure, Outcome, IPW_GPS)
+anlaysis_data <- reduce(data_list, ~ full_join(.x, .y, by = "id"))
+
+# function
+factor_relevel <- function(data, var, ref) {
+  print(table(data[[var]]))
+  data[[var]] <- relevel(as.factor(data[[var]]), ref)
+  return(data)
+}
+
+# treat variables
+anlaysis_data1 <- anlaysis_data |>
+  (\(d) {
+    d <- factor_relevel(d, "Sex", "0")
+    d <- factor_relevel(d, "Ethnic", "2")
+    d <- factor_relevel(d, "Smoking", "1")
+    d <- factor_relevel(d, "Alcohol.drinker.status", "1")
+    d <- factor_relevel(d, "Education", "1")
+    d <- factor_relevel(d, "diet_score", "1")
+    d <- factor_relevel(d, "Employment", "2")
+    d <- factor_relevel(d, "Income", "1")
+    d <- factor_relevel(d, "physical_activity", "0")
+    d <- factor_relevel(d, "diabetes", "0")
+    d <- factor_relevel(d, "hypertension", "0")
+    d <- factor_relevel(d, "hyperlipidemia", "0")
+    d
+  })()
+
+# baseline characteristics-------------------------------------------------------------------------
+table1_data <- anlaysis_data1
+
+##
+tab1 <- CreateTableOne(vars = myVars, data = table1_data, 
+                       strata = "outcome")
+
+table_1 <- print(tab1,quote = FALSE,
+                 contDigits = 2, catDigits=2, pDigits=3, noSpaces = TRUE,
+                 printToggle = FALSE, 
+                 showAllLevels = FALSE)
+
+write.csv(table_1,"table1_group.csv")
+
+tab1_all <- CreateTableOne(vars = myVars, data = table1_data)
+
+tab1_all <- print(tab1_all,quote = FALSE, 
+                  cpartontDigits = 2, catDigits=2, pDigits=3,noSpaces = TRUE,
+                  printToggle = FALSE, 
+                  showAllLevels = FALSE)
+
+write.csv(tab1_all,"tab1_all_all.csv")
+
+# Regression model-------------------------------------------------------------------------
+AP <- c("PM25", "PM10", "NO2", "NOx")
+
+Cox_results <- map_dfr(AP, function(i) {
+  fit <- coxph(Surv(tstart, tend, outcome) ~ get(i) + 
+                 strata(center) + 
+                 Age + Sex + Education + Employment + 
+                 Alcohol.drinker.status + Smoking + BMI +
+                 diet_score + physical_activity + TDI + Income + Ethnic +
+                 diabetes + hypertension + hyperlipidemia,
+               data = anlaysis_data1)
+  
+  s <- summary(fit)
+  
+  tibble(
+    pollutant = i,
+    HR = sprintf("%.2f (%.2f, %.2f)", 
+                 s$conf.int[1,1], s$conf.int[1,3], s$conf.int[1,4]),
+    P_value = s$coefficients[1,5]
+  )
+}) %>%
+  mutate(FDR_P = p.adjust(P_value, method = "fdr"))
+
+#combine table
+Cox_results_all <- rbind(
+  Cox_results1, "", Cox_results2, "", Cox_results3, "", 
+  Cox_results4, "", Cox_results5)
+
+Cox_results_all
+
+write.csv(Cox_results_all, "Cox_results_all.csv")
+
+# RCS-------------------------------------------------------------------------
+anlaysis_data1.1 <- anlaysis_data1
+dd <- datadist(anlaysis_data1.1)
+options(datadist = "dd")
+
+# function
+run_rcs <- function(data, exposure, knots = 3, cutoff, color, xlab, 
+                    outfile, text_x, text_y, p_nonlin) {
+  
+  # mode
+  fit <- cph(Surv(tstart, tend, outcome) ~ 
+               rcs(get(exposure), knots) + 
+               strata(UK.Biobank.assessment.centre) +
+               Age + Sex + Education + Employment + Alcohol.drinker.status +
+               Smoking + BMI + diet_score + physical_activity +
+               TDI + Income + Ethnic + diabetes + hypertension + hyperlipidemia,
+             x = TRUE, y = TRUE, data = data)
+  
+  # 
+  print(anova(fit))  
+  print(AIC(fit))
+  
+  # 
+  Pre <- rms::Predict(fit, get(exposure), fun = exp, type = "predictions", 
+                      ref.zero = TRUE, conf.int = 0.95, digits = 2)
+  
+  # 
+  p <- ggplot() +
+    geom_line(data = Pre,
+              aes_string(x = exposure, y = "yhat"),
+              linetype = "solid", size = 1.2, alpha = 0.7, colour = color) +
+    geom_ribbon(data = Pre,
+                aes_string(x = exposure, ymin = "lower", ymax = "upper"),
+                alpha = 0.1, fill = color) +
+    geom_hline(yintercept = 1, linetype = 2, size = 0.75) +
+    annotate("text", x = text_x, y = text_y,
+             label = paste0("P for non-linearity = ", p_nonlin),
+             colour = "black", size = 5, fontface = "italic") +
+    labs(x = xlab, y = "HRs and 95%CIs") +
+    theme_classic() +
+    theme(plot.title = element_text(size = 21, face = "bold"),
+          text = element_text(size = 20),
+          axis.text.x = element_text(size = 18, colour = "black"),
+          axis.text.y = element_text(size = 18, colour = "black"),
+          legend.position = "none")
+  
+  return(p)
+}
+
+plots <- list(
+  run_rcs(anlaysis_data1.1, "PM25", knots = 3, cutoff = 13,
+          color = "#B395BD", xlab = expression(PM[2.5]~(mu*g/m^3)),
+          outfile = "RCS_PM25.xlsx", text_x = 7.5, text_y = 6, p_nonlin = 0.064),
+  
+  run_rcs(anlaysis_data1.1, "PM10", knots = 3, cutoff = 20,
+          color = "#299D8F", xlab = expression(PM[10]~(mu*g/m^3)),
+          outfile = "RCS_PM10.xlsx", text_x = 11.5, text_y = 4, p_nonlin = 0.678),
+  
+  run_rcs(anlaysis_data1.1, "NO2", knots = 3, cutoff = 28,
+          color = "#F09148", xlab = expression(NO[2]~(mu*g/m^3)),
+          outfile = "RCS_NO2.xlsx", text_x = 11.5, text_y = 3, p_nonlin = 0.326),
+  
+  run_rcs(anlaysis_data1.1, "NOx", knots = 3, cutoff = 48,
+          color = "#FF9896", xlab = expression(NO[x]~(mu*g/m^3)),
+          outfile = "RCS_NOx.xlsx", text_x = 19, text_y = 3, p_nonlin = 0.677)
+)
+
+# patch pictures
+RCS <- wrap_plots(plots)
+ggsave("TAAD.pdf", RCS, scale = 3, dpi = 300, width = 10, height = 8)
+
+# Combine effects ----------------------------------------------------------
+
+# function
+plot_forest <- function(csv_file, pdf_file, title_expr, xticks_val, pdf_width=12, pdf_height=8) {
+  data <- read.csv(csv_file)
+  
+  pdf(pdf_file, width=pdf_width, height=pdf_height)
+  
+  forestplot(
+    labeltext = as.matrix(data[, c(1,2,6,7)]),
+    mean = data$HR,
+    lower = data$lower,
+    upper = data$upper,
+    zero = 1,
+    boxsize = 0.25,
+    lwd.zero = 2.5,
+    lwd.ci = 3.5,
+    lwd.xaxis = 2.5,
+    col = fpColors(box='#C94E65', lines='#6FB9D0', zero='#f3deb7'),
+    is.summary = c(T,T,F,F,F,T,F,F,F,T,F,F,F),
+    xticks = xticks_val,
+    txt_gp = fpTxtGp(ticks = gpar(cex=1.2), xlab = gpar(cex=1.6), cex=1.4),
+    lty.ci = "solid",
+    graph.pos = 3,
+    ci.vertices.height = 0.08,
+    title = title_expr,
+    xlab = "HRs and 95% CIs",
+    fn.ci_norm = "fpDrawCircleCI"
+  )
+  
+  dev.off()
+}
+
+# save pdf
+plot_forest("forest_PM2.5.csv", "PM2.5.pdf", expression(PM[2.5]), c(0,1,3,5,7,9,11))
+plot_forest("forest_PM10.csv", "PM10.pdf", expression(PM[10]), c(0,1,3,5,7,9))
+plot_forest("forest_NO2.csv", "NO2.pdf", expression(NO[2]), c(0,1,3,5,7))
+plot_forest("forest_NOx.csv", "NOx.pdf", expression(NO[x]), c(0,1,3,5,7))
+
