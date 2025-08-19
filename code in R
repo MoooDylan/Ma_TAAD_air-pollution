@@ -36,7 +36,7 @@ factor_relevel <- function(data, var, ref) {
 # treat variables
 anlaysis_data1 <- anlaysis_data |>
   (\(d) {
-    d <- factor_relevel(d, "Sex", "0")
+    d <- factor_relevel(d, "Sex", "1")
     d <- factor_relevel(d, "Ethnic", "2")
     d <- factor_relevel(d, "Smoking", "1")
     d <- factor_relevel(d, "Alcohol.drinker.status", "1")
@@ -44,10 +44,10 @@ anlaysis_data1 <- anlaysis_data |>
     d <- factor_relevel(d, "diet_score", "1")
     d <- factor_relevel(d, "Employment", "2")
     d <- factor_relevel(d, "Income", "1")
-    d <- factor_relevel(d, "physical_activity", "0")
-    d <- factor_relevel(d, "diabetes", "0")
-    d <- factor_relevel(d, "hypertension", "0")
-    d <- factor_relevel(d, "hyperlipidemia", "0")
+    d <- factor_relevel(d, "physical_activity", "1")
+    d <- factor_relevel(d, "diabetes", "1")
+    d <- factor_relevel(d, "hypertension", "1")
+    d <- factor_relevel(d, "hyperlipidemia", "1")
     d
   })()
 
@@ -118,7 +118,7 @@ run_rcs <- function(data, exposure, knots = 3, cutoff, color, xlab,
   # mode
   fit <- cph(Surv(tstart, tend, outcome) ~ 
                rcs(get(exposure), knots) + 
-               strata(UK.Biobank.assessment.centre) +
+               strat(center) +
                Age + Sex + Education + Employment + Alcohol.drinker.status +
                Smoking + BMI + diet_score + physical_activity +
                TDI + Income + Ethnic + diabetes + hypertension + hyperlipidemia,
